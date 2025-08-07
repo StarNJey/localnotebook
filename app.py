@@ -23,13 +23,6 @@ try:
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
 
-try:
-    import fitz  # PyMuPDF
-    PYMUPDF_AVAILABLE = True
-except ImportError:
-    PYMUPDF_AVAILABLE = False
-
-import PyPDF2
 
 # 한국어 문장 분리 라이브러리들
 try:
@@ -202,9 +195,7 @@ class ImprovedPDFExtractor:
         self.available_methods = []
         if PDFPLUMBER_AVAILABLE:
             self.available_methods.append("pdfplumber")
-        if PYMUPDF_AVAILABLE:
-            self.available_methods.append("PyMuPDF")
-        self.available_methods.append("PyPDF2")
+    
         
         # st.info(f"사용 가능한 PDF 추출 방법: {', '.join(self.available_methods)}")
 
@@ -221,25 +212,7 @@ class ImprovedPDFExtractor:
             except Exception as e:
                 st.warning(f"pdfplumber 추출 실패: {e}")
 
-        # 방법 2: PyMuPDF (빠른 속도)
-        if PYMUPDF_AVAILABLE:
-            try:
-                text = self._extract_with_pymupdf(pdf_path)
-                if text.strip():
-                    # st.success("✅ PyMuPDF로 텍스트 추출 성공")
-                    return text
-            except Exception as e:
-                st.warning(f"PyMuPDF 추출 실패: {e}")
-
-        # 방법 3: PyPDF2 (fallback)
-        try:
-            text = self._extract_with_pypdf2(pdf_path)
-            if text.strip():
-                # st.success("✅ PyPDF2로 텍스트 추출 성공")
-                return text
-        except Exception as e:
-            st.error(f"모든 PDF 추출 방법 실패: {e}")
-            return ""
+    
 
     def _extract_with_pdfplumber(self, pdf_path: str) -> str:
         """pdfplumber를 사용한 텍스트 추출"""
@@ -251,28 +224,7 @@ class ImprovedPDFExtractor:
                     text += page_text + "\n"
         return text
 
-    def _extract_with_pymupdf(self, pdf_path: str) -> str:
-        """PyMuPDF를 사용한 텍스트 추출"""
-        text = ""
-        doc = fitz.open(pdf_path)
-        for page in doc:
-            page_text = page.get_text()
-            if page_text:
-                text += page_text + "\n"
-        doc.close()
-        return text
-
-    def _extract_with_pypdf2(self, pdf_path: str) -> str:
-        """PyPDF2를 사용한 텍스트 추출"""
-        text = ""
-        with open(pdf_path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        return text
-
+    
 # ────────────────────────────────────────────────────────────
 # 4. 디바이스 설정 클래스
 # ────────────────────────────────────────────────────────────
@@ -377,7 +329,13 @@ class ImprovedPDFNotebookLM:
                 # LLM
         st.info("▶ LLM 로딩...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=self.device_config.config["torch_dtype"], max_memory={0: "14GB"}, trust_remote_code=True).to(self.device)
+      #  self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=self.device_config.config["torch_dtype"], max_memory={0: "14GB"}, trust_remote_code=True).to(self.device)
+
+        map_dev = "auto" if self.device_config.device == "cuda" else "cpu"
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=self.device_config.config["torch_dtype"],
+            device_map=map_dev, max_memory={0: "14GB"}, trust_remote_code=True
+        ).to(self.device)
 
     def load_pdf_documents(self, pdf_paths: List[str]) -> None:
         """개선된 PDF 문서 로딩"""
@@ -858,4 +816,5 @@ with st.expander("📦 질문 가이드"):
 # 모순된 내용의 PDF를 함께 로드하면 참조한 부분에 따라 다른 답변을 할 가능성이 높습니다.  
     """)
     
+
     st.info("💡관련성이 낮더라도 일단 답변하도록 설정하였습니다. 답변 신뢰도 점수가 낮은 때에는 틀린 답변일 가능성이 높아 확인이 필요합니다.")
