@@ -1066,20 +1066,20 @@ class DeepResearchOrchestrator:
         # 임베딩 모델
         st.info("▶ 임베딩 모델 로딩...")
         embed_model_dir = './local_models/embed'
-        self.embed_tokenizer = AutoTokenizer.from_pretrained(self.embed_model)
-        self.embed_model = AutoModel.from_pretrained(self.embed_model).to(self.device_config.device)
+        self.embed_tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        self.embed_model = AutoModel.from_pretrained("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2").to(self.device_config.device)
         
         # Cross-Encoder
         reranker_dir = "./local_models/reranker"
-        self.reranker = CrossEncoder(self.reranker_name, device=self.device_config.device)
+        self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device_config.device)
         
         # LLM
         st.info("▶ LLM 로딩...")
         llm_model_dir = './local_models/model'
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained("LGAI-EXAONE/EXAONE-4.0-1.2B", trust_remote_code=True)
         map_dev = "auto" if self.device_config.device == "cuda" else "cpu"
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name, torch_dtype=self.device_config.config["torch_dtype"],
+            "LGAI-EXAONE/EXAONE-4.0-1.2B", torch_dtype=self.device_config.config["torch_dtype"],
             device_map=map_dev, max_memory={0: "14GB"}, trust_remote_code=True
         ).to(self.device)
         
