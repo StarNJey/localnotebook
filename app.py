@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 import streamlit as st
 import numpy as np
 import torch, gc
+from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 from sentence_transformers.cross_encoder import CrossEncoder
 import warnings
@@ -817,4 +818,5 @@ with st.expander("📦 질문 가이드"):
     
 
     st.info("💡관련성이 낮더라도 일단 답변하도록 설정하였습니다. 답변 신뢰도 점수가 낮은 때에는 틀린 답변일 가능성이 높아 확인이 필요합니다.")
+
 
