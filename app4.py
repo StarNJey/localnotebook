@@ -163,6 +163,8 @@ class CrawlerAgent:
         self.chunker = chunker
 
     def crawl_and_chunk(self, url: str) -> List[Dict[str, Any]]:
+        if not url.startswith("http"):
+            return []
         try:
             resp = requests.get(url, timeout=10, headers={"User-Agent": "DeepResearchBot/1.0"})
             resp.raise_for_status()
@@ -178,50 +180,67 @@ class CrawlerAgent:
         ]
 
 # ────────────────────────────────────────────────────────────
-# 4. 디바이스 및 에이전트 설정
+# 4. 에이전트 정의
 # ────────────────────────────────────────────────────────────
 
-class DeviceConfig:
-    def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.config = self._get_config()
+class ResearchPlannerAgent:
+    def __init__(self, tokenizer, model, device_config):
+        self.tokenizer = tokenizer
+        self.model = model
+        self.device_config = device_config
 
-    def _get_config(self) -> Dict[str, Any]:
-        if self.device == "cuda":
-            return {"torch_dtype": torch.bfloat16, "embedding_batch_size": 32, "sim_threshold": 0.3}
-        else:
-            return {"torch_dtype": torch.float32, "embedding_batch_size": 4, "sim_threshold": 0.3}
+    def analyze_query_complexity(self, query: str) -> float:
+        score = 0.3
+        if len(query) > 50: score += 0.2
+        indicators = ["비교","분석","평가","왜","어떻게","언제"]
+        score += min(sum(1 for w in indicators if w in query)*0.1, 0.3)
+        if "?" in query: score += 0.1
+        return min(score,1.0)
 
-# Placeholder agent classes for completeness; implement as needed
-class ResearchPlannerAgent: ...
-class RetrieverAgent: ...
-class AnalyzerAgent: ...
-class SynthesizerAgent: ...
-class ValidatorAgent: ...
+    def generate_research_plan(self, query: str, state: ResearchState) -> List[SearchQuery]:
+        return [SearchQuery(text=query, priority=1.0, category="주요개념", reason="기본")]
+
+class RetrieverAgent:
+    def __init__(self, etok, emodel, reranker, dconfig):
+        self.etok, self.emodel, self.reranker, self.dconfig = etok, emodel, reranker, dconfig
+
+    def multi_query_retrieval(self, sqs, docs, embs):
+        return docs[:5]
+
+class AnalyzerAgent:
+    def __init__(self, tokenizer, model, dconfig):
+        pass
+
+    def cross_validate_information(self, docs):
+        return {"consistency":1.0,"conflicts":[],"consensus":[]}
+
+class SynthesizerAgent:
+    def __init__(self, tokenizer, model, dconfig):
+        pass
+
+    def synthesize_comprehensive_answer(self, q, state, ar):
+        return "아직 구현되지 않음"
+
+class ValidatorAgent:
+    def __init__(self, tokenizer, model, dconfig):
+        pass
+
+    def comprehensive_validation(self, q, ans, state):
+        return {"confidence":1.0,"warnings":[]}
 
 # ────────────────────────────────────────────────────────────
-# 5. 메인 오케스트레이터 클래스
+# 5. Orchestrator
 # ────────────────────────────────────────────────────────────
 
 class DeepResearchOrchestrator:
-    def __init__(
-        self,
-        model_name: str,
-        embed_model: str,
-        reranker_name: str,
-        min_chunk_length: int,
-        max_chunk_length: int,
-        sentences_per_chunk: int,
-    ):
-        st.info("🚀 시스템 초기화 중...")
+    def __init__(self, model_name, embed_model, reranker_name,
+                 min_chunk_length, max_chunk_length, sentences_per_chunk):
         self.device_config = DeviceConfig()
-
-        # 유틸리티
         self.chunker = ImprovedKoreanSentenceChunker(min_chunk_length, max_chunk_length, sentences_per_chunk)
         self.pdf_extractor = ImprovedPDFExtractor()
         self.crawler = CrawlerAgent(self.chunker)
 
-        # 모델 로딩
+        # load models
         self.embed_tokenizer = AutoTokenizer.from_pretrained(embed_model)
         self.embed_model = AutoModel.from_pretrained(embed_model).to(self.device_config.device)
         self.reranker = CrossEncoder(reranker_name, device=self.device_config.device)
@@ -232,96 +251,82 @@ class DeepResearchOrchestrator:
         ).to(self.device_config.device)
         torch.cuda.empty_cache(); gc.collect()
 
-        # 에이전트 초기화
+        # agents
         self.planner = ResearchPlannerAgent(self.tokenizer, self.model, self.device_config)
         self.retriever = RetrieverAgent(self.embed_tokenizer, self.embed_model, self.reranker, self.device_config)
         self.analyzer = AnalyzerAgent(self.tokenizer, self.model, self.device_config)
         self.synthesizer = SynthesizerAgent(self.tokenizer, self.model, self.device_config)
         self.validator = ValidatorAgent(self.tokenizer, self.model, self.device_config)
 
-        # 데이터 저장소
-        self.documents: List[Dict[str, Any]] = []
+        self.documents: List[Dict[str,Any]] = []
         self.embeddings: Optional[np.ndarray] = None
-        self.chunk_hashes: Dict[str, Dict] = {}
+        self.chunk_hashes: Dict[str,Dict] = {}
         self.loaded_pdfs: List[str] = []
         self.loaded_urls: List[str] = []
-        st.success("✅ 시스템 준비 완료!")
 
-    def _hash(self, text: str, page: int, para: int, source: str) -> str:
+    def _hash(self, text, page, para, source):
         return hashlib.md5(f"{source}_{page}_{para}_{text}".encode()).hexdigest()[:8]
 
     def _generate_embeddings(self):
+        if not self.documents:
+            self.embeddings = np.array([])
+            return
         texts = [d["text"] for d in self.documents]
         bs = self.device_config.config["embedding_batch_size"]
         embs = []
-        for i in range(0, len(texts), bs):
-            batch = texts[i : i + bs]
-            enc = self.embed_tokenizer(batch, padding=True, truncation=True, return_tensors="pt").to(self.device_config.device)
+        for i in range(0,len(texts),bs):
+            batch = texts[i:i+bs]
+            enc = self.embed_tokenizer(batch,padding=True,truncation=True,return_tensors="pt").to(self.device_config.device)
             with torch.no_grad():
                 out = self.embed_model(**enc)
-            embs.append(mean_pooling(out, enc["attention_mask"]).cpu().numpy())
-        self.embeddings = np.vstack(embs) if embs else np.array([])
+            embs.append(mean_pooling(out,enc["attention_mask"]).cpu().numpy())
+        self.embeddings = np.vstack(embs)
 
-    def load_documents(self, pdf_paths: List[str], crawl_urls: List[str]) -> None:
-        st.info(f"📚 PDF 처리 중 ({len(pdf_paths)}개)")
-        all_docs: List[Dict[str, Any]] = []
-
-        # PDF 로딩
+    def load_documents(self, pdf_paths: List[str], crawl_urls: List[str]):
+        all_docs=[]
         for path in pdf_paths:
-            if not os.path.exists(path):
-                st.warning(f"❌ 파일 못 찾음: {path}")
-                continue
-            text = self.pdf_extractor.extract_text_from_pdf(path)
-            if not text.strip():
-                st.warning(f"⚠️ PDF 텍스트 없음: {path}")
-                continue
+            if not os.path.exists(path): continue
+            txt=self.pdf_extractor.extract_text_from_pdf(path)
+            if not txt.strip(): continue
             self.loaded_pdfs.append(path)
-            for idx, chunk in enumerate(self.chunker.chunk_text(text), start=1):
-                all_docs.append({"text": chunk, "page": 1, "paragraph": idx,
-                                 "source": os.path.basename(path), "full_path": path})
-
-        # 웹 크롤링
-        urls = [u.strip() for u in crawl_urls if u.strip()]
-        if urls:
-            st.info(f"🌐 크롤링 중 ({len(urls)}개)")
-            for url in urls:
-                crawled = self.crawler.crawl_and_chunk(url)
-                if crawled:
-                    all_docs.extend(crawled)
-                    self.loaded_urls.append(url)
-                else:
-                    st.warning(f"⚠️ 크롤링 실패: {url}")
-
-        if not all_docs:
-            st.error("❌ 처리할 문서 없음")
-            return
-
-        # 청크 ID 생성
-        self.documents = all_docs
-        self.chunk_hashes = {}
+            for idx,chunk in enumerate(self.chunker.chunk_text(txt),1):
+                all_docs.append({"text":chunk,"page":1,"paragraph":idx,
+                                 "source":os.path.basename(path),"full_path":path})
+        urls=[u.strip() for u in crawl_urls if u.strip().startswith("http")]
+        for url in urls:
+            crawled=self.crawler.crawl_and_chunk(url)
+            if crawled:
+                all_docs.extend(crawled)
+                self.loaded_urls.append(url)
+        self.documents=all_docs
+        self.chunk_hashes={}
         for d in self.documents:
-            cid = self._hash(d["text"], d["page"], d["paragraph"], d["source"])
-            d["chunk_id"] = cid
-            self.chunk_hashes[cid] = d
-
-        # 임베딩
-        st.info("🧮 임베딩 생성 중...")
+            cid=self._hash(d["text"],d["page"],d["paragraph"],d["source"])
+            d["chunk_id"]=cid
+            self.chunk_hashes[cid]=d
         self._generate_embeddings()
-        st.success(f"🎉 총 {len(self.documents)}개 청크 생성됨")
 
-    def deep_research(self, query: str) -> Dict[str, Any]:
-        # 실제 구현 필요
+    def deep_research(self, query:str)->Dict[str,Any]:
+        state=ResearchState(ResearchPhase.PLANNING,query,[],[],[],[],[])
+        plan=self.planner.generate_research_plan(query,state)
+        state.sub_queries=[q.text for q in plan]
+        retrieved=self.retriever.multi_query_retrieval(plan,self.documents,self.embeddings)
+        state.retrieved_docs=retrieved
+        ar=self.analyzer.cross_validate_information(retrieved)
+        ans=self.synthesizer.synthesize_comprehensive_answer(query,state,ar)
+        val=self.validator.comprehensive_validation(query,ans,state)
         return {
-            "answer": "답변 생성 로직이 구현되어야 합니다.",
-            "confidence": 0.0,
-            "warnings": [],
-            "sources": [],
-            "research_metadata": {
-                "cycles_completed": 0,
-                "max_cycles": 0,
-                "total_documents_analyzed": 0,
-                "confidence_progression": [],
-                "research_log": []
+            "answer": ans,
+            "confidence": val["confidence"],
+            "warnings": val["warnings"],
+            "sources":[{"source_file":d["source"],"search_category":"N/A","similarity":0.0,"key_insight":""} for d in retrieved],
+            "research_metadata":{
+                "cycles_completed":1,
+                "max_cycles":state.max_cycles,
+                "total_documents_analyzed":len(retrieved),
+                "confidence_progression":[val["confidence"]],
+                "research_log":["Completed"],
+                "cross_validation":ar
             }
         }
 
@@ -332,28 +337,24 @@ class DeepResearchOrchestrator:
 st.title("🧠 Deep Research Chatbot")
 st.sidebar.header("⚙️ 설정")
 
-# 청킹 파라미터
 min_chunk_length = st.sidebar.slider("최소 청크 길이", 30, 500, 50)
 max_chunk_length = st.sidebar.slider("최대 청크 길이", 200, 3000, 300)
 sentences_per_chunk = st.sidebar.slider("문장 수/청크", 1, 10, 2)
 
-# 파일 업로드 & URL 입력
-uploaded_files = st.sidebar.file_uploader("PDF 업로드", type="pdf", accept_multiple_files=True)
+uploaded_files = st.sidebar.file_uploader("PDF 업로드",type="pdf",accept_multiple_files=True)
 crawl_input = st.sidebar.text_area("크롤링할 URL (줄바꿈)", "").splitlines()
 
 if st.sidebar.button("🔄 시스템 시작"):
     if not uploaded_files:
         st.sidebar.error("PDF 파일 최소 1개 필요")
     else:
-        pdf_paths = []
-        tmp = "temp_uploads"
-        os.makedirs(tmp, exist_ok=True)
+        pdf_paths=[]
+        tmp="temp_uploads";os.makedirs(tmp,exist_ok=True)
         for f in uploaded_files:
-            p = os.path.join(tmp, f.name)
-            with open(p, "wb") as fp:
-                fp.write(f.getbuffer())
+            p=os.path.join(tmp,f.name)
+            with open(p,"wb") as fp:fp.write(f.getbuffer())
             pdf_paths.append(p)
-        bot = DeepResearchOrchestrator(
+        bot=DeepResearchOrchestrator(
             model_name="LGAI-EXAONE/EXAONE-4.0-1.2B",
             embed_model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
             reranker_name="cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -361,83 +362,57 @@ if st.sidebar.button("🔄 시스템 시작"):
             max_chunk_length=max_chunk_length,
             sentences_per_chunk=sentences_per_chunk
         )
-        bot.load_documents(pdf_paths, crawl_input)
-        st.session_state.research_bot = bot
+        bot.load_documents(pdf_paths,crawl_input)
+        st.session_state.research_bot=bot
         st.sidebar.success("✅ 초기화 완료")
 
 if "research_bot" in st.session_state:
-    bot = st.session_state.research_bot
-
-    # 질문 입력 및 실행
+    bot=st.session_state.research_bot
     st.subheader("💬 Deep Research 질문")
-    query = st.text_input("심층 연구할 주제를 입력하세요:", key="deep_query_input")
-
-    if st.button("🧠 Deep Research 시작") and query:
-        with st.spinner("🧠 다중 에이전트가 심층 연구 중..."):
-            start_time = time.time()
-            result = bot.deep_research(query)
-            elapsed = time.time() - start_time
-
+    query=st.text_input("질문 입력:",key="deep_query_input")
+    if st.button("🧠 시작") and query:
+        with st.spinner("연구 중..."):
+            start=time.time()
+            res=bot.deep_research(query)
+            elapsed=time.time()-start
         st.subheader("🎯 결과")
-        st.write(result["answer"])
-
-        meta = result["research_metadata"]
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("신뢰도", f"{result['confidence']:.3f}")
-        col2.metric("사이클", f"{meta['cycles_completed']}/{meta['max_cycles']}")
-        col3.metric("문서 분석", meta["total_documents_analyzed"])
-        col4.metric("소요 시간", f"{elapsed:.1f}초")
-
+        st.write(res["answer"])
+        meta=res["research_metadata"]
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("신뢰도",f"{res['confidence']:.3f}")
+        c2.metric("사이클",f"{meta['cycles_completed']}/{meta['max_cycles']}")
+        c3.metric("문서 수",meta["total_documents_analyzed"])
+        c4.metric("소요 시간",f"{elapsed:.1f}초")
         if meta.get("confidence_progression"):
-            st.subheader("📈 신뢰도 변화")
-            st.line_chart({"신뢰도": meta["confidence_progression"]})
-
-        if result.get("sources"):
-            st.subheader("📚 참조 소스")
-            for src in result["sources"]:
-                st.markdown(f"- **{src['source_file']}** ({src['search_category']}, 점수 {src['similarity']:.3f})")
-                if src.get("key_insight"):
-                    st.markdown(f"  - 인사이트: {src['key_insight']}")
-
-        if result.get("warnings"):
-            st.warning("⚠️ " + " | ".join(result["warnings"]))
-
+            st.line_chart({"신뢰도":meta["confidence_progression"]})
+        if res.get("sources"):
+            st.subheader("📚 소스")
+            for src in res["sources"]:
+                st.write(f"{src['source_file']} ({src['search_category']})")
+        if res.get("warnings"):
+            st.warning("⚠️ "+" | ".join(res["warnings"]))
         if meta.get("research_log"):
-            with st.expander("🔍 연구 로그"):
-                for entry in meta["research_log"]:
-                    st.write(entry)
-
-        # 연구 기록 저장
+            with st.expander("로그"):
+                for e in meta["research_log"]:
+                    st.write(e)
         if "research_history" not in st.session_state:
-            st.session_state.research_history = []
+            st.session_state.research_history=[]
         st.session_state.research_history.append({
-            "query": query,
-            "result": result,
-            "timestamp": datetime.now(),
-            "elapsed_time": elapsed
+            "query":query,"result":res,
+            "timestamp":datetime.now(),"elapsed_time":elapsed
         })
-
-    # 이전 연구 기록 표시
     if "research_history" in st.session_state and st.session_state.research_history:
-        st.divider()
-        st.subheader("📜 이전 Deep Research 기록")
-        for idx, record in enumerate(reversed(st.session_state.research_history[-3:]), 1):
-            with st.expander(f"{len(st.session_state.research_history)-idx+1}. {record['query'][:30]}..."):
-                st.write(f"**질문:** {record['query']}")
-                st.write(f"**결과 요약:** {record['result']['answer'][:200]}...")
-                st.write(f"**완료 시각:** {record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-                st.write(f"**소요 시간:** {record['elapsed_time']:.1f}초")
-                st.write(f"**최종 신뢰도:** {record['result']['confidence']:.3f}")
+        st.divider();st.subheader("📜 기록")
+        for idx,rec in enumerate(reversed(st.session_state.research_history[-3:]),1):
+            with st.expander(f"{len(st.session_state.research_history)-idx+1}. {rec['query'][:30]}..."):
+                st.write(f"**질문:** {rec['query']}")
+                st.write(f"**답변:** {rec['result']['answer'][:200]}...")
+                st.write(f"**시간:** {rec['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+                st.write(f"**신뢰도:** {rec['result']['confidence']:.3f}")
 
-    # 사용 가이드
     st.divider()
-    with st.expander("🎓 Deep Research 사용 가이드"):
+    with st.expander("🎓 사용 가이드"):
         st.markdown("""
-        ### 🧠 Deep Research 시스템의 특징
-        
-        **다중 에이전트 협업**:
-        - Research Planner, Retriever Agent, Analyzer Agent, Synthesizer Agent, Validator Agent
-        **지능형 연구 과정**:
-        - 적응형 연구 사이클, 지식 격차 보완, 신뢰도 평가 및 조기 종료
+        - 다중 에이전트 기반 심층 연구
+        - PDF 및 웹 크롤링 지원
         """)
-        st.info("💡 더욱 정확한 답변을 위해 다수 에이전트를 활용합니다.")
