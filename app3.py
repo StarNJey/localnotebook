@@ -348,12 +348,12 @@ class ResearchPlannerAgent:
             {"role": "system", "content": "당신은 연구 계획을 수립하는 전문가입니다."},
             {"role": "user", "content": planning_prompt}
         ]
-        
         response = self._generate_llm_response(messages, max_tokens=1000)
-        return self._parse_search_queries(response)
+        return self._parse_search_queries(response, state)
     
-    def _parse_search_queries(self, response: str) -> List[SearchQuery]:
+    def _parse_search_queries(self, response: str, state: ResearchState) -> List[SearchQuery]:
         """LLM 응답에서 검색 쿼리 파싱"""
+        
         queries = []
         lines = response.split('\n')
         
