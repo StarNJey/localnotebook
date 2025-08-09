@@ -407,7 +407,7 @@ class ResearchPlannerAgent:
                 curr = {}
         if not queries:
             queries.append(SearchQuery(text=state.query, priority=1.0, category="주요개념", reason="기본 검색", search_web=True))
-        return queries[:5]
+        return queries[:10]
 
     def identify_knowledge_gaps(self, state: ResearchState) -> List[str]:
         if not state.retrieved_docs and not state.web_docs:
@@ -485,7 +485,7 @@ class RetrieverAgent:
                 st.info(f"🌐 웹 검색 수행 중... ({len(web_qs)}개)")
                 for wq in web_qs:
                     try:
-                        crawled = self.web_crawler.search_and_crawl(wq.text, max_results=3)
+                        crawled = self.web_crawler.search_and_crawl(wq.text, max_results=8)
                         web_docs_collected.extend(crawled)
                     except Exception as e:
                         st.warning(f"웹 크롤링 실패: {e}")
@@ -654,7 +654,7 @@ class SynthesizerAgent:
 핵심 원칙:
 1. 제공된 PDF 및 웹 문서 정보만 사용
 2. 모든 주장에 대한 정확한 출처 명시 필수
-3. PDF와 웹 출처를 구분하여 표시
+3. PDF와 웹 출처를 구분하여 반드시 표시
 4. 불확실한 정보는 신뢰도와 함께 제시
 5. 상충되는 정보는 객관적으로 제시
 6. 지식 격차는 솔직하게 인정
@@ -662,7 +662,7 @@ class SynthesizerAgent:
 출처 표시 형식:
 - PDF: [파일명, 관련도: 0.XX]
 - 웹: [제목/도메인, URL, 크롤링시간, 관련도: 0.XX]
-답변 구조:
+답변 구조(출처 반드시 표시):
 - 핵심 답변 (요약)
 - 상세 설명 (근거와 출처 함께)
 - 추가 고려사항 (한계점 포함)
