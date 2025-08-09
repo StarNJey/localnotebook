@@ -77,7 +77,7 @@ class WebCrawler:
             'User-Agent': 'Mozilla/5.0'
         })
 
-    def search_web(self, query: str, max_results: int = 5) -> List[str]:
+    def search_web(self, query: str, max_results: int = 15) -> List[str]:
         """DuckDuckGo를 통한 웹 검색"""
         try:
             search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
@@ -144,7 +144,7 @@ class WebCrawler:
             time.sleep(0.5)
         return web_docs
 
-    def search_and_crawl(self, query: str, max_results: int = 5) -> List[WebDocument]:
+    def search_and_crawl(self, query: str, max_results: int = 15) -> List[WebDocument]:
         """검색 + 크롤링 통합 메서드"""
         urls = self.search_web(query, max_results)
         if not urls:
@@ -489,14 +489,18 @@ class RetrieverAgent:
                         web_docs_collected.extend(crawled)
                     except Exception as e:
                         st.warning(f"웹 크롤링 실패: {e}")
-            if web_docs_collected and orchestrator:
-                web_results = self._process_web_docs(web_docs_collected, orchestrator)
+            if web_docs_collected:
+                # 💡 변경점 1: _process_web_docs 호출 시 orchestrator 인자 제거
+                web_results = self._process_web_docs(web_docs_collected)
                 all_results.extend(web_results)
 
         unique = self._deduplicate_results(all_results)
+        # 💡 변경점 3: _rerank_results가 웹/PDF 점수를 다르게 계산
         return self._rerank_results(search_queries[0].text if search_queries else "", unique)
 
-    def _process_web_docs(self, web_docs: List[WebDocument], orchestrator) -> List[Dict]:
+    # 💡 변경점 2: _process_web_docs에서 하드코딩된 점수 제거
+    def _process_web_docs(self, web_docs: List[WebDocument]) -> List[Dict]:
+        """크롤링된 웹 문서를 표준 형식으로 변환 (점수 계산 없음)"""
         web_results = []
         for wd in web_docs:
             web_results.append({
@@ -508,11 +512,9 @@ class RetrieverAgent:
                 "source_type": "WEB",
                 "web_title": wd.title,
                 "web_domain": wd.domain,
-                "web_crawl_time": wd.crawl_time,
-                "similarity": 0.7,
-                "final_score": 0.7
+                "web_crawl_time": wd.crawl_time
+                # "similarity" 와 "final_score" 는 여기서 설정하지 않음
             })
-            orchestrator_state = orchestrator
         return web_results
 
     def _single_query_retrieval(self, query: str, documents: List[Dict],
@@ -538,23 +540,41 @@ class RetrieverAgent:
     def _deduplicate_results(self, results: List[Dict]) -> List[Dict]:
         seen, unique = set(), []
         for r in results:
-            h = hashlib.md5(r["text"].encode()).hexdigest()
-            if h not in seen:
-                seen.add(h)
+            # chunk_id가 있는 경우 우선 사용, 없으면 텍스트 해시 사용
+            identifier = r.get("chunk_id")
+            if not identifier:
+                 identifier = hashlib.md5(r["text"].encode()).hexdigest()
+
+            if identifier not in seen:
+                seen.add(identifier)
                 unique.append(r)
         return unique
 
+    # 💡 변경점 4: _rerank_results에서 웹/PDF 점수 계산 로직 분리
     def _rerank_results(self, main_query: str, results: List[Dict], top_k: int = 15) -> List[Dict]:
+        """Cross-Encoder로 결과 재평가 (웹/PDF 점수 계산 분리)"""
         if not results:
             return []
+        
         texts = [r["text"] for r in results]
-        scores = self.reranker.predict([(main_query, t) for t in texts])
+        # CrossEncoder는 정규화되지 않은 점수를 반환하므로 시그모이드 함수로 0-1 사이 값으로 변환
+        scores = torch.sigmoid(torch.tensor(self.reranker.predict([(main_query, t) for t in texts]))).tolist()
+
         for r, sc in zip(results, scores):
-            sim = r.get("similarity", 0.5)
             r["rerank_score"] = float(sc)
-            r["final_score"] = sim * 0.4 + sc * 0.6
+            
+            # PDF는 임베딩 유사도와 재평가 점수를 결합
+            if r.get("source_type") == "PDF":
+                sim = r.get("similarity", 0.0)
+                r["final_score"] = sim * 0.4 + r["rerank_score"] * 0.6
+            # WEB은 재평가 점수를 최종 점수로 사용
+            else: 
+                r["similarity"] = 0.0 # 초기 유사도 없음
+                r["final_score"] = r["rerank_score"]
+
         results.sort(key=lambda x: x["final_score"], reverse=True)
         return results[:top_k]
+
 
 class SynthesizerAgent:
     """정보 통합 및 최종 답변 생성 에이전트 (웹 출처 표시 기능 강화)"""
