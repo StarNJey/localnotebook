@@ -594,61 +594,79 @@ class SynthesizerAgent:
             {"role":"user","content":prompt}
         ]
         return self._generate_final_answer(messages, cfg)
-
-    def _build_synthesis_prompt(self, query: str, state: ResearchState,
-                                analysis_results: Dict) -> str:
-        # PDF 요약
+    def _build_synthesis_prompt(self, query: str, state: ResearchState, analysis_results: Dict) -> str:
+        # PDF 문서 요약에 인용 태그 자동 할당
+        pdf_docs = [d for d in state.retrieved_docs if d.get("source_type") == "PDF"][:5]
         pdf_summaries = []
-        pdf_docs = [d for d in state.retrieved_docs if d.get("source_type")!="WEB"][:5]
-        for i, d in enumerate(pdf_docs,1):
-            summary = f"[PDF 문서 {i}] 파일: {d.get('source','Unknown')}, 관련도: {d.get('final_score',0):.2f}\n"
-            summary += f"내용: {d['text'][:300]}...\n"
-            if d.get("key_insight"):
-                summary += f"핵심 인사이트: {d['key_insight']}\n"
-            pdf_summaries.append(summary)
-        # 웹 요약
+        for idx, d in enumerate(pdf_docs, 1):
+            tag = f"[{idx}]"
+            pdf_summaries.append(
+                f"{tag} 파일: {d['source']}, 페이지:{d['page']}, 단락:{d['paragraph']}, 관련도:{d['final_score']:.2f}\n"
+                f"내용: {d['text'][:200]}...\n"
+            )
+    
+        # 웹 문서 요약에 인용 태그 자동 할당
+        web_docs = [d for d in state.retrieved_docs if d.get("source_type") == "WEB"][:5]
         web_summaries = []
-        web_docs = state.web_docs + [d for d in state.retrieved_docs if d.get("source_type")=="WEB"]
-        for i, doc in enumerate(web_docs[:5],1):
-            if isinstance(doc, WebDocument):
-                summary = f"[웹 문서 {i}] 제목: {doc.title}\nURL: {doc.url}\n도메인: {doc.domain}, 크롤링 시간: {doc.crawl_time}\n내용: {doc.text[:300]}...\n"
-            else:
-                summary = f"[웹 문서 {i}] 제목: {doc.get('web_title','제목 없음')}\nURL: {doc.get('source','Unknown')}\n도메인: {doc.get('web_domain','Unknown')}, 크롤링 시간: {doc.get('web_crawl_time','Unknown')}\n관련도: {doc.get('final_score',0):.2f}\n내용: {doc['text'][:300]}...\n"
-            web_summaries.append(summary)
-        analysis = f"""
-교차 검증 결과:
-- 정보 일관성: {analysis_results.get('consistency',0.5):.2f}
-- 상충 정보: {len(analysis_results.get('conflicts',[]))}건
-- 공통 정보: {len(analysis_results.get('consensus',[]))}건
-연구 진행 현황:
-- 탐색 사이클: {state.cycle_count+1}/{state.max_cycles}
-- 발견된 인사이트: {len(state.insights)}개
-- 식별된 지식 격차: {len(state.gaps)}개
-- PDF 문서: {len(pdf_docs)}개
-- 웹 문서: {len(web_docs)}개
-"""
-        pdf_sec = f"=== PDF 문서 정보 ===\n{''.join(pdf_summaries)}" if pdf_summaries else "PDF 문서 없음"
-        web_sec = f"=== 웹 문서 정보 ===\n{''.join(web_summaries)}" if web_summaries else "웹 문서 없음"
+        offset = len(pdf_summaries)
+        for j, d in enumerate(web_docs, 1):
+            tag = f"[{offset + j}]"
+            web_summaries.append(
+                f"{tag} 도메인: {d['web_domain']}, URL: {d['source']}, 크롤링시간:{d['web_crawl_time']}, 관련도:{d['final_score']:.2f}\n"
+                f"내용: {d['text'][:200]}...\n"
+            )
+    
+        # 교차검증 결과 요약
+        analysis_section = (
+            f"교차 검증 결과:\n"
+            f"- 정보 일관성: {analysis_results.get('consistency', 0.5):.2f}\n"
+            f"- 상충 정보: {len(analysis_results.get('conflicts', []))}건\n"
+            f"- 공통 정보: {len(analysis_results.get('consensus', []))}건\n"
+        )
+    
+        # 연구 진행 현황
+        status_section = (
+            f"연구 진행 현황:\n"
+            f"- 탐색 사이클: {state.cycle_count + 1}/{state.max_cycles}\n"
+            f"- 발견된 인사이트: {len(state.insights)}개\n"
+            f"- 식별된 지식 격차: {len(state.gaps)}개\n"
+            f"- PDF 문서: {len(pdf_docs)}개\n"
+            f"- 웹 문서: {len(web_docs)}개\n"
+        )
+    
+        pdf_block = "".join(pdf_summaries) if pdf_summaries else "PDF 문서 없음\n"
+        web_block = "".join(web_summaries) if web_summaries else "웹 문서 없음\n"
+    
         return f"""다음 연구 결과를 바탕으로 질문에 대한 종합적인 답변을 작성하세요:
+    
+    원본 질문: {query}
+    
+    === PDF 문서 요약 ===
+    {pdf_block}
+    
+    === 웹 문서 요약 ===
+    {web_block}
+    
+    === 분석 결과 ===
+    {analysis_section}
+    {status_section}
+    
+    === 출처 및 인용 태그 안내 ===
+    - 위 요약 블록에서 정의된 인용 태그([1], [2], …)를 문장 끝에 반드시 재사용하세요.
+    - PDF 인용 형식: [파일명, 페이지:단락, 관련도: X.XX]
+    - 웹 인용 형식: [도메인, URL, 크롤링시간, 관련도: X.XX]
+    - 예시:
+      > “AI 시장은 연평균 20% 성장할 전망입니다.” [example.pdf, p.3:2, 0.87]
+    
+    === 작성 지침 ===
+    1. 각 문장마다 해당 인용 태그를 붙여 근거를 명확히 표시하세요.
+    2. 상충되는 정보가 있으면 태그와 함께 객관적으로 제시하세요.
+    3. 부족한 정보가 있으면 솔직히 언급하세요.
+    4. 답변 말미에 종합 신뢰도를 제시하세요.
+    
+    답변:
+    """
 
-원본 질문: {query}
-
-{pdf_sec}
-
-{web_sec}
-
-=== 분석 결과 ===
-{analysis}
-
-=== 출처 표시 요구사항 ===
-1. 모든 정보에 대해 정확한 출처를 명시해야 합니다
-2. PDF 출처 형식: [파일명, 관련도: X.XX]
-3. 웹 출처 형식: [제목 또는 도메인, URL, 크롤링시간, 관련도: X.XX]
-4. 상충되는 정보가 있다면 명시하고 각각의 출처를 표시
-5. 부족한 정보가 있다면 언급
-6. 신뢰도 수준 제시
-7. 구체적이고 상세한 답변 작성
-반드시 모든 주장과 정보에 대해 위 형식으로 출처를 표시하세요."""
     def _get_synthesis_system_prompt(self) -> str:
         return """당신은 다중 소스 정보를 종합하여 정확하고 포괄적인 답변을 생성하는 연구 전문가입니다.
 핵심 원칙:
@@ -660,8 +678,14 @@ class SynthesizerAgent:
 6. 지식 격차는 솔직하게 인정
 7. 논리적이고 체계적인 구조로 답변
 출처 표시 형식:
-- PDF: [파일명, 관련도: 0.XX]
-- 웹: [제목/도메인, URL, 크롤링시간, 관련도: 0.XX]
+
+- PDF: [파일명, 페이지:단락, 관련도: 0.XX]
+- 웹: [도메인, URL, 크롤링시간, 관련도: 0.XX]
+
+본문 작성 지시:
+- 앞서 요약 블록에서 정의된 인용 태그([1], , …)를 **문장 끝에 반드시 재사용**.
+- 예시:
+  > “AI 시장은 연평균 20% 성장할 전망입니다.” [example.pdf, p.3:2, 0.87]
 답변 구조(출처 반드시 표시):
 - 핵심 답변 (요약)
 - 상세 설명 (근거와 출처 함께)
@@ -838,12 +862,17 @@ class DeepResearchOrchestrator:
             if conf > 0.85 and len(state.retrieved_docs)>=5:
                 research_log.append(f"높은 신뢰도 달성 ({conf:.2f}) - 조기 종료")
                 break
-        # Phase3: 종합답변
+
+        # Phase2 종료 → 실제 교차검증 수행
+        st.info("✅ 교차검증 수행 중... (PDF + 웹)")
+        state.phase = ResearchPhase.CROSS_VALIDATION
+        analysis_results = self.analyzer.cross_validate_information(state.retrieved_docs[:10])
+
+# Phase3: 종합답변
         st.info("📝 종합 답변 생성 중... (PDF + 웹)")
         state.phase = ResearchPhase.SYNTHESIS
-        analysis_results = {"consistency":0.8,"conflicts":[],"consensus":[]}
         answer = self.synthesizer.synthesize_comprehensive_answer(query, state, analysis_results)
-        research_log.append("종합 답변 생성 완료")
+
 
         # 결과 포맷
         sources = []
